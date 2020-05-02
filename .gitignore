@@ -1,0 +1,36 @@
+# Build folders
+build*/
+out*/
+# Generated results
+*.so
+*.pyd
+*.pdf
+*.dat
+
+# Ignore folders
+ignore*/
+
+# OS and editor specific files
+.DS_Store
+*~
+.lnk
+[Dd]esktop.ini
+Thumbs.db
+$RECYCLE.BIN/
+[._]*.un~
+.fuse_hidden*
+*.kdev4
+
+# ctags
+tags
+
+# Private keys
+secring.*
+
+# Backups and temporaries
+*.bak
+*.gho
+*.ori
+*.orig
+*.tmp
+
