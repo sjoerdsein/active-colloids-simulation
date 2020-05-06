@@ -17,5 +17,6 @@ target_compile_features(mcexercise PUBLIC cxx_std_20) # Use C++2a
 # Enable many warnings, and don't finish compiling when something's wrong
 target_compile_options (mcexercise PRIVATE -Wall -Wextra -Wpedantic -Werror) # TODO -Weverything -Wno-c++98-compat with clang
 target_compile_options (mcexercise PRIVATE -O3 -march=native -flto) # Enable optimizations
+target_link_options    (mcexercise PRIVATE -flto -fuse-ld=gold)     # Enable optimizations and 'gold' linker, for clang
 
 # TODO Enable static analyzers, sanitizers, formatting, more warnings, debug/release specific features, ...

@@ -13,14 +13,34 @@ void translator( type_error const & e) { PyErr_SetString(PyExc_TypeError , e.wha
 void translator(value_error const & e) { PyErr_SetString(PyExc_ValueError, e.what()); }
 
 
+constexpr double two_pi{ 6.283185307179586476925286766559005768394338798750211641949 };
+std::mt19937_64 g { std::random_device{}() };
+constexpr double d { 1.0 }; // diameter
+
 struct point {
 	double x, y;
 	//constexpr auto operator<=>(point const &) const noexcept = default;
 };
+[[nodiscard]] constexpr point operator+(point const lhs, point const rhs) noexcept { return {lhs.x + rhs.x, lhs.y + rhs.y}; }
+[[nodiscard]] constexpr point operator-(point const lhs, point const rhs) noexcept { return {lhs.x - rhs.x, lhs.y - rhs.y}; }
+[[nodiscard]] constexpr point operator*(point const lhs, double const rhs) noexcept { return {lhs.x * rhs, lhs.y * rhs}; }
+[[nodiscard]] constexpr point operator*(double const lhs, point const rhs) noexcept { return rhs * lhs; }
+constexpr point & operator+=(point & lhs, point const rhs) noexcept { return lhs = lhs + rhs; }
+constexpr point & operator-=(point & lhs, point const rhs) noexcept { return lhs = lhs - rhs; }
+constexpr point & operator*=(point & lhs, double const rhs) noexcept { return lhs = lhs * rhs; }
+[[nodiscard]] constexpr double norm_sq(point const p) noexcept { return p.x*p.x + p.y*p.y; }
 
 point border;
 
-auto simulate(py::list const box_size, np::ndarray const init, int /*rounds*/)
+[[nodiscard]] bool intersects(size_t point_idx, std::vector<point> const & points, size_t start=0) noexcept
+{
+	for (size_t i{start}; i < points.size(); ++i) {
+		if (i != point_idx and norm_sq(points[i] - points[point_idx]) < d*d) return true;
+	}
+	return false;
+}
+
+auto simulate(py::list const box_size, np::ndarray const init, int rounds)
 {
 	if (init.get_dtype()  != np::dtype::get_builtin<double>())
 	                            { throw  type_error{"array dtype must be double"    }; }
@@ -36,6 +56,24 @@ auto simulate(py::list const box_size, np::ndarray const init, int /*rounds*/)
 		throw value_error{"invalid box size: either NaN or <= 0"};
 	}
 
+	auto init_data { reinterpret_cast<point const *>(init.get_data()) }; // UB?
+	std::vector<point> points(init_data, init_data + init.shape(0)); // copy
+
+	std::uniform_real_distribution<double>  angle_prng(0.0, two_pi); // min, max
+	std::normal_distribution      <double> radius_prng(0.0, 0.5);    // mean, stddev TODO should be variable
+
+	for (int j{}; j < rounds; ++j) {
+		for (size_t i{}; i < points.size(); ++i) {
+			auto const  angle {  angle_prng(g) };
+			auto const radius { radius_prng(g) };
+
+			point & p { points[i] };
+			point const old_pos { p };
+			p += radius * point{std::sin(angle), std::cos(angle)};
+
+			if (intersects(i, points)) p = old_pos;
+		}
+	}
 	return init;
 }
 
