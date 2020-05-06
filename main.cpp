@@ -1,5 +1,6 @@
 #include <random>
 #include <boost/python/numpy.hpp>
+#include <boost/multi_array.hpp>
 
 namespace py = boost::python;
 namespace np = py::numpy;
@@ -34,10 +35,25 @@ point border;
 
 [[nodiscard]] bool intersects(size_t point_idx, std::vector<point> const & points, size_t start=0) noexcept
 {
-	for (size_t i{start}; i < points.size(); ++i) {
-		if (i != point_idx and norm_sq(points[i] - points[point_idx]) < d*d) return true;
-	}
-	return false;
+	auto does_intersect = [&points, start, point_idx](point const pbc_shift = {0,0}) noexcept {
+		point const testpoint { points[point_idx] + pbc_shift };
+		for (size_t i{start}; i < points.size(); ++i) {
+			if (i != point_idx and norm_sq(points[i] - testpoint) < d*d) return true;
+		} return false;
+	};
+
+	point const p { points[point_idx] };
+	return does_intersect()
+			or (p.x < d
+				and (does_intersect({ border.x, 0})
+					or (p.y < d          and does_intersect({ border.x,  border.y}))
+					or (p.y > border.y-d and does_intersect({ border.x, -border.y}))))
+			or (p.x > border.x-d
+				and (does_intersect({-border.x, 0})
+					or (p.y < d          and does_intersect({-border.x,  border.y}))
+					or (p.y > border.y-d and does_intersect({-border.x, -border.y}))))
+			or (p.y < d          and does_intersect({0,  border.y}))
+			or (p.y > border.y-d and does_intersect({0, -border.y}));
 }
 
 auto simulate(py::list const box_size, np::ndarray const init, int rounds)
@@ -59,6 +75,10 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds)
 	auto init_data { reinterpret_cast<point const *>(init.get_data()) }; // UB?
 	std::vector<point> points(init_data, init_data + init.shape(0)); // copy
 
+	// ( np::dtype(py::list(py::make_tuple("point", point{})))	and define to_python(point))
+	np::ndarray archive { np::empty(py::make_tuple(rounds, init.shape(0), 2), init.get_dtype()) };
+	boost::multi_array_ref<double, 3> archive_data(reinterpret_cast<double *>(archive.get_data()), boost::extents[rounds][init.shape(0)][2]);
+
 	std::uniform_real_distribution<double>  angle_prng(0.0, two_pi); // min, max
 	std::normal_distribution      <double> radius_prng(0.0, 0.5);    // mean, stddev TODO should be variable
 
@@ -71,10 +91,17 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds)
 			point const old_pos { p };
 			p += radius * point{std::sin(angle), std::cos(angle)};
 
+			while (p.x <  border.x) p.x += border.x;
+			while (p.x >= border.x) p.x -= border.x;
+			while (p.y <  border.y) p.y += border.y;
+			while (p.y >= border.y) p.y -= border.y;
 			if (intersects(i, points)) p = old_pos;
 		}
+		// Reinterpret cast is probably UB
+		boost::const_multi_array_ref<double, 2> const points_data(reinterpret_cast<double const *>(points.data()), boost::extents[points.size()][2]);
+		archive_data[j] = points_data;
 	}
-	return init;
+	return archive;
 }
 
 
