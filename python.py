@@ -6,19 +6,45 @@ import mcexercise as mce
 
 np.set_printoptions(precision=4, linewidth=332)
 
-nr_frames = 1000
+friction_coefficient = 10.0
+nr_steps = 10000
+skip_frames = 10
+dt = 0.001
 
-draw_paths=True
-
+draw_MSD = True
+draw_paths = False
 render_animation = False
 anim_filename = "jiggle.mp4"
+
+diffusion_coefficient = 1.0/friction_coefficient
+nr_frames = nr_steps // skip_frames
 
 with open("init2d.dat") as file:
 	box_size = np.genfromtxt(file, max_rows=1).tolist()
 	initial_positions = np.genfromtxt(file)
 
 
-result = mce.simulate(box_size, initial_positions, nr_frames)
+result = mce.simulate(box_size,
+                      initial_positions,
+                      nr_steps,
+                      skip_frames,
+                      friction_coefficient,
+                      dt)
+
+if draw_MSD:
+    diff = result - initial_positions
+    plt.grid(True)
+    # plt.plot(np.arange(nr_frames) * dt * 2 * 2 * diffusion_coefficient * skip_frames, 'r--', label=r"Expected $\langle r^2 \rangle$")  # For an open space and no interactions
+    plt.plot(np.mean(diff[...,0]**2 + diff[...,1]**2, axis=1), 'k', label=r"Actual $\langle r^2 \rangle$")
+    plt.xlim(0,nr_frames)
+    plt.ylim(0,None)
+    plt.xlabel("Step nr")
+    plt.ylabel(r"$\langle r^2\rangle$")
+    # plt.axhline((box_size[0]**2 + box_size[1]**2)/6, c='k')  # Expected <r^2> when all particles are randomly distributed inside a box
+    plt.legend()
+    plt.title(fr"Diffusion coefficient $D={diffusion_coefficient:.2}$")
+    plt.show()
+
 
 if draw_paths:
     reshaped = np.moveaxis(result, -1, 0)
