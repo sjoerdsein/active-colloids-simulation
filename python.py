@@ -7,16 +7,17 @@ import mcexercise as mce
 np.set_printoptions(precision=4, linewidth=332)
 
 viscosity = 10.0
+propulsion_strength = 0.0005
 nr_steps = 10000
 skip_frames = 10
 dt = 0.001
 
 
 draw_MSD = False
-MSD_filename = "MSD.svg"
+MSD_filename = "MSD_active.svg"
 draw_paths = False
 render_animation = False
-anim_filename = "jiggle.mp4"
+anim_filename = "jiggle_active.mp4"
 
 nr_frames = nr_steps // skip_frames
 print(f"Performing {nr_steps} simulation steps", end='')
@@ -33,6 +34,7 @@ result = mce.simulate(box_size,
                       nr_steps,
                       skip_frames,
                       viscosity,
+                      propulsion_strength,
                       dt)
 print("Simulation done")
 

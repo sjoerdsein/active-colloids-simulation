@@ -105,7 +105,7 @@ std::mt19937_64 g; // { std::random_device{}() };
 
 
 // The main simulation function that is called from Python
-auto simulate(py::list const box_size, np::ndarray const init, int rounds, int skip_rounds, double viscosity, double Dt)
+auto simulate(py::list const box_size, np::ndarray const init, int rounds, int skip_rounds, double viscosity, double propulsion_strength, double Dt)
 {
 	// Verify the types, dimensions and values of the arguments
 	if (init.get_dtype()  != np::dtype::get_builtin<double>())
@@ -137,8 +137,10 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds, int s
 	double const gamma = 3.0 * pi * d * viscosity;  // Friction coefficient
 	double const random_step_scale = std::sqrt(Dt / gamma * 2.); // Translational diffusion coefficient
 	double const interaction_step_scale = Dt / gamma;
+	double const rotation_step_scale = std::sqrt(Dt / (2.0 * pi*pi*pi * d*d*d * viscosity)); // Rotational diffusion coefficient
 
 	std::normal_distribution<double> dx_prng(0.0, random_step_scale);
+	std::normal_distribution<double> da_prng(0.0, rotation_step_scale);
 
 	// Perform the actual simulation
 	for (int j{}; j < rounds; ++j) {
@@ -146,13 +148,18 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds, int s
 			// Abbreviation
 			particle & p { particles[i] };
 
+			// Apply random rotation
+			auto const da_rand = da_prng(g);
+			p.a += da_rand;
+
 			// Calculate the offsets from the forces
 			auto const dx_rand = vec{dx_prng(g), dx_prng(g)};
 			auto const dx_int  = interaction_step_scale * interaction_force(particles, i);
+			auto const dx_prop = propulsion_strength * vec{std::cos(p.a), std::sin(p.a)};
 
 			// Apply offsets
 			vec & v = p.p;
-			v += dx_rand + dx_int;
+			v += dx_rand + dx_int + dx_prop;
 
 			// Apply periodic boundary conditions
 			// Rather slow when the particles are near 10^50...
