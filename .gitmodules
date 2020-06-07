@@ -1,0 +1,3 @@
+[submodule "voro"]
+	path = voro
+	url = git@github.com:sjoerdsein/voro.git

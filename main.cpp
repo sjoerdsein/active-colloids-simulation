@@ -1,6 +1,7 @@
 #include <random>
 #include <boost/python/numpy.hpp>
 #include <boost/multi_array.hpp>
+#include "voro++_2d.hh"
 
 // Abbreviate Python and NumPy namespaces
 namespace py = boost::python;
@@ -142,6 +143,10 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds, int s
 	std::normal_distribution<double> dx_prng(0.0, random_step_scale);
 	std::normal_distribution<double> da_prng(0.0, rotation_step_scale);
 
+	// Add voronoi container for density calculations
+	voro::container_2d con(0, border.x, 0, border.y, 8, 8, true, true, init.shape(0)*2/8/8);
+	//               		  {container borders x, y} {# div} {periodic} {# particles per div}
+
 	// Perform the actual simulation
 	for (int j{}; j < rounds; ++j) {
 		for (size_t i{}; i < particles.size(); ++i) {
@@ -170,9 +175,29 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds, int s
 		}
 		// Save a snapshot
 		if (j % skip_rounds == 0) {
+			int save_idx = j / skip_rounds;
+
+			// Save this frame to return to python
 			// Reinterpret cast is probably UB
 			boost::const_multi_array_ref<double, 2> const particles_data(reinterpret_cast<double const *>(particles.data()), boost::extents[particles.size()][3]);
-			archive_data[j/skip_rounds] = particles_data;
+			archive_data[save_idx] = particles_data;
+
+
+			// Calculate density using voronoi diagram
+
+			// Add particles to voronoi
+			for (int i{}; auto const & p : particles) {
+				con.put(i++, p.p.x, p.p.y);
+			}
+			// For all particles, calculate and save the cell's area and density
+			voro::c_loop_all_2d vl(con);
+			voro::voronoicell_2d c{};
+			if(vl.start()) do if(con.compute_cell(c,vl)) {
+				archive_data[save_idx][con.id[vl.ij][vl.q]][2] = 1.0/c.area();
+			} while(vl.inc());
+
+			// Clear the diagram for the next round
+			con.clear();
 		}
 	}
 	return archive;
