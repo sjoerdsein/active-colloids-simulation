@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation, cm
@@ -7,6 +7,7 @@ import mcexercise as mce
 np.set_printoptions(precision=4, linewidth=332)
 
 viscosity = 10.0
+
 propulsion_strength = 0.003
 nr_steps = 10000
 skip_frames = 10
@@ -16,7 +17,7 @@ dt = 0.001
 draw_MSD = False
 MSD_filename = "MSD_active.svg"
 draw_paths = False
-render_animation = False
+render_animation = True
 anim_filename = "jiggle_active.mp4"
 
 nr_frames = nr_steps // skip_frames
@@ -28,7 +29,12 @@ with open("init2d.dat") as file:
 	box_size = np.genfromtxt(file, max_rows=1).tolist()
 	initial_positions = np.genfromtxt(file)
 
-print("Runnung simulation")
+f = 0.75 ## size factor
+box_size = [p*f for p in box_size]
+initial_positions[:,:2] *=f
+
+
+print("Running simulation")
 result = mce.simulate(box_size,
                       initial_positions,
                       nr_steps,
