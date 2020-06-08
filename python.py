@@ -17,8 +17,9 @@ dt = 0.001
 draw_MSD = False
 MSD_filename = "MSD_active.svg"
 draw_paths = False
-render_animation = True
+render_animation = False
 anim_filename = "jiggle_active.mp4"
+draw_hist = True
 
 nr_frames = nr_steps // skip_frames
 print(f"Performing {nr_steps} simulation steps", end='')
@@ -97,3 +98,9 @@ if render_animation:
 
     anim = animation.FuncAnimation(fig, animate, frames=nr_frames, blit=True, repeat=False)
     anim.save(anim_filename, fps=30)
+    
+if draw_hist:
+    plt.figure("Density histogram")
+    plt.xlim(0,1)
+    plt.hist(densities[-1])
+    plt.show()
