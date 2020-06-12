@@ -1,6 +1,7 @@
 #include <random>
 #include <boost/python/numpy.hpp>
 #include <boost/multi_array.hpp>
+#include "voro++_2d.hh"
 
 // Abbreviate Python and NumPy namespaces
 namespace py = boost::python;
@@ -16,17 +17,16 @@ void translator( type_error const & e) { PyErr_SetString(PyExc_TypeError , e.wha
 void translator(value_error const & e) { PyErr_SetString(PyExc_ValueError, e.what()); }
 
 
-// Initialize global variables
-constexpr double two_pi = 6.283185307179586476925286766559005768394338798750211641949;
-constexpr double two_to_the_one_sixth = 1.1224620483093729814335330496791795162324111;
-constexpr double two_to_the_one_third = 1.2599210498948731647672106072782283505702514;
-std::mt19937_64 g{}; // std::random_device{}() };
+// Define global constants
+constexpr double pi = 3.141592653589793238462643383279502884197169399375105820974;
+constexpr double two_to_the_one_sixth = 1.122462048309372981433533049679179516232;
+constexpr double two_to_the_one_third = 1.259921049894873164767210607278228350570;
 constexpr double d  = 1.0; // diameter
 constexpr double e  = 1.0; // ~ repulsion strength
 
 
 // Constexpr recursive function for integer powers
-constexpr bool fast_power = true; // Slightly less precise, but reduces 11 multiplications to four
+constexpr bool fast_power = true; // Slightly less precise, but reduces eleven multiplications to four
 template <int p>
 [[nodiscard]] constexpr auto to_the(auto const base) noexcept requires(p > 0) {
 		if constexpr (p == 1) return base;
@@ -34,28 +34,34 @@ template <int p>
 		else return to_the<p-1>(base) * base;
 }
 
-// Define a 'point' object and its operations
-struct point {
+// Define a mathematical 2D vector object and its operations
+struct vec {
 	double x{}, y{};
 };
-[[nodiscard]] constexpr point operator+(point const lhs, point const rhs) noexcept { return {lhs.x + rhs.x, lhs.y + rhs.y}; }
-[[nodiscard]] constexpr point operator-(point const lhs, point const rhs) noexcept { return {lhs.x - rhs.x, lhs.y - rhs.y}; }
-[[nodiscard]] constexpr point operator*(point const lhs, double const rhs) noexcept { return {lhs.x * rhs, lhs.y * rhs}; }
-[[nodiscard]] constexpr point operator*(double const lhs, point const rhs) noexcept { return rhs * lhs; }
-constexpr point & operator+=(point & lhs, point const rhs) noexcept { return lhs = lhs + rhs; }
-constexpr point & operator-=(point & lhs, point const rhs) noexcept { return lhs = lhs - rhs; }
-constexpr point & operator*=(point & lhs, double const rhs) noexcept { return lhs = lhs * rhs; }
-[[nodiscard]] constexpr double norm_sq(point const p) noexcept { return p.x*p.x + p.y*p.y; }
+[[nodiscard]] constexpr vec   operator+ (vec    const lhs,  vec    const rhs) noexcept { return {lhs.x + rhs.x, lhs.y + rhs.y}; }
+[[nodiscard]] constexpr vec   operator- (vec    const lhs,  vec    const rhs) noexcept { return {lhs.x - rhs.x, lhs.y - rhs.y}; }
+[[nodiscard]] constexpr vec   operator* (vec    const lhs,  double const rhs) noexcept { return {lhs.x * rhs  , lhs.y * rhs  }; }
+[[nodiscard]] constexpr vec   operator* (double const lhs,  vec    const rhs) noexcept { return rhs * lhs; }
+              constexpr vec & operator+=(vec        & lhs,  vec    const rhs) noexcept { return lhs = lhs + rhs; }
+              constexpr vec & operator-=(vec        & lhs,  vec    const rhs) noexcept { return lhs = lhs - rhs; }
+              constexpr vec & operator*=(vec        & lhs,  double const rhs) noexcept { return lhs = lhs * rhs; }
+[[nodiscard]] constexpr double norm_sq(vec const p) noexcept { return p.x*p.x + p.y*p.y; }
 
-// The border as a global point (shouldn't it be called a 'vector')
-point border;
+struct particle {
+	vec p{};
+	double a{};
+};
+
+// Define global variables
+vec border;
+std::mt19937_64 g; // { std::random_device{}() };
 
 
 // The WCA force for particles at a certain distance vector
-[[nodiscard]] constexpr auto WCA_force(point dist) noexcept {
+[[nodiscard]] constexpr vec WCA_force(vec dist) noexcept {
 	double const r2 = norm_sq(dist);
 
-	if (r2 >= two_to_the_one_third * d*d) return point{0,0};
+	if (r2 >= two_to_the_one_third * d*d) return {0,0};
 
 	double const r8  = to_the<4>(r2);
 	double const r14 = to_the<7>(r2);
@@ -67,54 +73,50 @@ point border;
 
 // The total WCA interaction force between a particle and all its neighbours,
 // accounting for periodic boundary conditions
-[[nodiscard]] auto interaction_force(std::vector<point> const & points, size_t point_idx) noexcept {
-	// Calculate WCA force without boundary conditions, but with a specific offset
-	auto calc_force = [&points, point_idx](point const pbc_shift = {0,0}) noexcept {
-		point const testpoint { points[point_idx] + pbc_shift };
-		point total_force{};
-		for (size_t i{}; i < points.size(); ++i) {
-			if (i != point_idx) total_force += WCA_force(points[i] - testpoint);
+[[nodiscard]] vec interaction_force(std::vector<particle> const & particles, size_t particle_idx) noexcept {
+	// Lambda to calculate the WCA force without boundary conditions, but with a
+	// specific offset
+	auto calc_force = [&particles, particle_idx](vec const pbc_shift = {0,0}) noexcept {
+		vec const testparticle = particles[particle_idx].p + pbc_shift;
+		vec total_force{};
+		for (size_t i{}; i < particles.size(); ++i) {
+			if (i != particle_idx) total_force += WCA_force(particles[i].p - testparticle);
 		} return total_force;
 	};
 
-	point const p { points[point_idx] };
+	//
+	auto const p = particles[particle_idx].p;
 	constexpr auto force_range = d * two_to_the_one_sixth;
 
 	// Sum WCA forces, and wrap around boundaries if needed
 	auto result = calc_force();
 	if (p.x < force_range) {
 		result += calc_force({ border.x, 0});
-		if (p.y < force_range)
-			result += calc_force({ border.x,  border.y});
-		else if (p.y > border.y-force_range)
-			result += calc_force({ border.x, -border.y});
+		/**/ if (p.y <=         force_range) result += calc_force({ border.x,  border.y});
+		else if (p.y > border.y-force_range) result += calc_force({ border.x, -border.y});
 	} else if (p.x > border.x-force_range) {
 		result += calc_force({-border.x, 0});
-		if (p.y < force_range)
-			result += calc_force({-border.x,  border.y});
-		else if (p.y > border.y-force_range)
-			result += calc_force({-border.x, -border.y});
+		/**/ if (p.y <=         force_range) result += calc_force({-border.x,  border.y});
+		else if (p.y > border.y-force_range) result += calc_force({-border.x, -border.y});
 	}
-	if (p.y < force_range) // NO else!
-		result += calc_force({0,  border.y});
-	else if (p.y > border.y-force_range)
-		result += calc_force({0, -border.y});
+	/**/ if (p.y <=         force_range) result += calc_force({0,  border.y});
+	else if (p.y > border.y-force_range) result += calc_force({0, -border.y});
 	return result;
 }
 
 
 // The main simulation function that is called from Python
-auto simulate(py::list const box_size, np::ndarray const init, int rounds, int skip_rounds, double gamma, double Dt)
+auto simulate(py::list const box_size, np::ndarray const init, int rounds, int skip_rounds, double viscosity, double propulsion_strength, double Dt)
 {
 	// Verify the types, dimensions and values of the arguments
 	if (init.get_dtype()  != np::dtype::get_builtin<double>())
 	                            { throw  type_error{"array dtype must be double"    }; }
 	if (init.get_nd()     != 2) { throw shape_error{"array must be two-dimensional" }; }
-	if (init.shape(1)     != 2) { throw shape_error{"array must be of shape (2, N)" }; }
+	if (init.shape(1)     != 3) { throw shape_error{"array must be of shape (3, N)" }; }
 	if (init.shape(0)     <= 0) { throw value_error{"array must not be empty"       }; }
 	if (py::len(box_size) != 2) { throw shape_error{"box size list must be length 2"}; }
 
-	if (gamma <= 0.) { throw value_error{"friction coefficient must have a positive non-zero value"}; }
+	if (viscosity <= 0.) { throw value_error{"viscosity must have a positive non-zero value"}; }
 
 	border = {py::extract<double>(box_size[0]),
 	          py::extract<double>(box_size[1])};
@@ -124,43 +126,78 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds, int s
 	}
 
 	// Copy the data into a std::vector
-	auto init_data { reinterpret_cast<point const *>(init.get_data()) }; // UB?
-	std::vector<point> points(init_data, init_data + init.shape(0)); // copy
+	auto init_data { reinterpret_cast<particle const *>(init.get_data()) }; // UB?
+	std::vector<particle> particles(init_data, init_data + init.shape(0)); // copy
 
 	// Create a Boost.MultiArray to store snapshots of the simulation
 	int const nr_frames = rounds / skip_rounds;
-	np::ndarray archive { np::empty(py::make_tuple(nr_frames, init.shape(0), 2), init.get_dtype()) };
-	boost::multi_array_ref<double, 3> archive_data(reinterpret_cast<double *>(archive.get_data()), boost::extents[nr_frames][init.shape(0)][2]);
+	np::ndarray archive { np::empty(py::make_tuple(nr_frames, init.shape(0), 3), init.get_dtype()) };
+	boost::multi_array_ref<double, 3> archive_data(reinterpret_cast<double *>(archive.get_data()), boost::extents[nr_frames][init.shape(0)][3]);
 
 	// Prepare for the numerical integration
+	double const gamma = 3.0 * pi * d * viscosity;  // Friction coefficient
+	double const random_step_scale = std::sqrt(Dt / gamma * 2.); // Translational diffusion coefficient
 	double const interaction_step_scale = Dt / gamma;
-	double const random_step_scale = std::sqrt(Dt / gamma * 2.);
+	double const rotation_step_scale = std::sqrt(Dt / (2.0 * pi*pi*pi * d*d*d * viscosity)); // Rotational diffusion coefficient
 
 	std::normal_distribution<double> dx_prng(0.0, random_step_scale);
+	std::normal_distribution<double> da_prng(0.0, rotation_step_scale);
+
+	// Add voronoi container for density calculations
+	voro::container_2d con(0, border.x, 0, border.y, 8, 8, true, true, init.shape(0)*2/8/8);
+	//               		  {container borders x, y} {# div} {periodic} {# particles per div}
 
 	// Perform the actual simulation
 	for (int j{}; j < rounds; ++j) {
-		for (size_t i{}; i < points.size(); ++i) {
+		for (size_t i{}; i < particles.size(); ++i) {
+			// Abbreviation
+			particle & p { particles[i] };
+
+			// Apply random rotation
+			auto const da_rand = da_prng(g);
+			p.a += da_rand;
+
 			// Calculate the offsets from the forces
-			auto const dx_rand = point{dx_prng(g), dx_prng(g)};
-			auto const dx_int  = interaction_step_scale * interaction_force(points, i);
+			auto const dx_rand = vec{dx_prng(g), dx_prng(g)};
+			auto const dx_int  = interaction_step_scale * interaction_force(particles, i);
+			auto const dx_prop = propulsion_strength * vec{std::cos(p.a), std::sin(p.a)};
 
 			// Apply offsets
-			point & p { points[i] };
-			p += dx_rand + dx_int;
+			vec & v = p.p;
+			v += dx_rand + dx_int + dx_prop;
 
 			// Apply periodic boundary conditions
 			// Rather slow when the particles are near 10^50...
-			while (p.x <  border.x) p.x += border.x;
-			while (p.x >= border.x) p.x -= border.x;
-			while (p.y <  border.y) p.y += border.y;
-			while (p.y >= border.y) p.y -= border.y;
+			while (v.x <  border.x) v.x += border.x;
+			while (v.x >= border.x) v.x -= border.x;
+			while (v.y <  border.y) v.y += border.y;
+			while (v.y >= border.y) v.y -= border.y;
 		}
 		// Save a snapshot
 		if (j % skip_rounds == 0) {
+			int save_idx = j / skip_rounds;
+
+			// Save this frame to return to python
 			// Reinterpret cast is probably UB
-			boost::const_multi_array_ref<double, 2> const points_data(reinterpret_cast<double const *>(points.data()), boost::extents[points.size()][2]);
-			archive_data[j/skip_rounds] = points_data;
+			boost::const_multi_array_ref<double, 2> const particles_data(reinterpret_cast<double const *>(particles.data()), boost::extents[particles.size()][3]);
+			archive_data[save_idx] = particles_data;
+
+
+			// Calculate density using voronoi diagram
+
+			// Add particles to voronoi
+			for (int i{}; auto const & p : particles) {
+				con.put(i++, p.p.x, p.p.y);
+			}
+			// For all particles, calculate and save the cell's area and density
+			voro::c_loop_all_2d vl(con);
+			voro::voronoicell_2d c{};
+			if(vl.start()) do if(con.compute_cell(c,vl)) {
+				archive_data[save_idx][con.id[vl.ij][vl.q]][2] = 1.0/c.area();
+			} while(vl.inc());
+
+			// Clear the diagram for the next round
+			con.clear();
 		}
 	}
 	return archive;
