@@ -68,4 +68,3 @@ def update(val):
     ax2.grid()
 sbeta.on_changed(update)
 plt.show()
-
