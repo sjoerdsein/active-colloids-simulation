@@ -104,6 +104,64 @@ std::mt19937_64 g; // { std::random_device{}() };
 	return result;
 }
 
+void simulation_step(std::vector<particle> & particles,
+                     std::normal_distribution<double> & dx_prng,
+                     std::normal_distribution<double> & da_prng,
+                     double interaction_step_scale,
+                     double propulsion_strength)
+{
+	for (size_t i{}; i < particles.size(); ++i) {
+		// Abbreviation
+		particle & p { particles[i] };
+
+		// Apply random rotation
+		auto const da_rand = da_prng(g);
+		p.a += da_rand;
+
+		// Calculate the offsets from the forces
+		auto const dx_rand = vec{dx_prng(g), dx_prng(g)};
+		auto const dx_int  = interaction_step_scale * interaction_force(particles, i);
+		auto const dx_prop = propulsion_strength * vec{std::cos(p.a), std::sin(p.a)};
+
+		// Apply offsets
+		vec & v = p.p;
+		v += dx_rand + dx_int + dx_prop;
+
+		// Apply periodic boundary conditions
+		// Rather slow when the particles are near 10^50...
+		while (v.x <  border.x) v.x += border.x;
+		while (v.x >= border.x) v.x -= border.x;
+		while (v.y <  border.y) v.y += border.y;
+		while (v.y >= border.y) v.y -= border.y;
+	}
+}
+
+void save_frame(std::vector<particle> & particles,
+                boost::multi_array_ref<double, 3> & archive_data,
+                voro::container_2d & con,
+								int frame_idx)
+{
+	// Save this frame's positions to return to python
+	// Reinterpret cast is probably UB
+	boost::const_multi_array_ref<double, 2> const particles_data(reinterpret_cast<double const *>(particles.data()), boost::extents[particles.size()][3]);
+	archive_data[frame_idx] = particles_data;
+
+	// Calculate density using voronoi diagram
+
+	// Add particles to voronoi
+	for (int i{}; auto const & p : particles) {
+		con.put(i++, p.p.x, p.p.y);
+	}
+	// For all particles, calculate and save the cell's area and density
+	voro::c_loop_all_2d vl(con);
+	voro::voronoicell_2d c{};
+	if(vl.start()) do if(con.compute_cell(c,vl)) {
+		archive_data[frame_idx][con.id[vl.ij][vl.q]][2] = 1.0/c.area();
+	} while(vl.inc());
+
+	// Clear the diagram for the next round
+	con.clear();
+}
 
 // The main simulation function that is called from Python
 auto simulate(py::list const box_size, np::ndarray const init, int rounds, int skip_rounds, double viscosity, double propulsion_strength, double Dt)
@@ -148,56 +206,10 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds, int s
 	//               		  {container borders x, y} {# div} {periodic} {# particles per div}
 
 	// Perform the actual simulation
-	for (int j{}; j < rounds; ++j) {
-		for (size_t i{}; i < particles.size(); ++i) {
-			// Abbreviation
-			particle & p { particles[i] };
-
-			// Apply random rotation
-			auto const da_rand = da_prng(g);
-			p.a += da_rand;
-
-			// Calculate the offsets from the forces
-			auto const dx_rand = vec{dx_prng(g), dx_prng(g)};
-			auto const dx_int  = interaction_step_scale * interaction_force(particles, i);
-			auto const dx_prop = propulsion_strength * vec{std::cos(p.a), std::sin(p.a)};
-
-			// Apply offsets
-			vec & v = p.p;
-			v += dx_rand + dx_int + dx_prop;
-
-			// Apply periodic boundary conditions
-			// Rather slow when the particles are near 10^50...
-			while (v.x <  border.x) v.x += border.x;
-			while (v.x >= border.x) v.x -= border.x;
-			while (v.y <  border.y) v.y += border.y;
-			while (v.y >= border.y) v.y -= border.y;
-		}
-		// Save a snapshot
-		if (j % skip_rounds == 0) {
-			int save_idx = j / skip_rounds;
-
-			// Save this frame to return to python
-			// Reinterpret cast is probably UB
-			boost::const_multi_array_ref<double, 2> const particles_data(reinterpret_cast<double const *>(particles.data()), boost::extents[particles.size()][3]);
-			archive_data[save_idx] = particles_data;
-
-
-			// Calculate density using voronoi diagram
-
-			// Add particles to voronoi
-			for (int i{}; auto const & p : particles) {
-				con.put(i++, p.p.x, p.p.y);
-			}
-			// For all particles, calculate and save the cell's area and density
-			voro::c_loop_all_2d vl(con);
-			voro::voronoicell_2d c{};
-			if(vl.start()) do if(con.compute_cell(c,vl)) {
-				archive_data[save_idx][con.id[vl.ij][vl.q]][2] = 1.0/c.area();
-			} while(vl.inc());
-
-			// Clear the diagram for the next round
-			con.clear();
+	for (int i{}; i < rounds; ++i) {
+		simulation_step(particles, dx_prng, da_prng, interaction_step_scale, propulsion_strength);
+		if (i % skip_rounds == 0) {
+			save_frame(particles, archive_data, con, i/skip_rounds);
 		}
 	}
 	return archive;
