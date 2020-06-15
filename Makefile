@@ -8,6 +8,8 @@ configure: build
 python: mcexercise.so python.py
 	./python.py
 
+.PHONY: so
+so: mcexercise.so
 mcexercise.so: build
 	cmake --build build
 

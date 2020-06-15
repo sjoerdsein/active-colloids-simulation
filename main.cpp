@@ -1,4 +1,5 @@
 #include <random>
+#include <iostream>
 #include <boost/python/numpy.hpp>
 #include <boost/multi_array.hpp>
 #include "voro++_2d.hh"
@@ -21,17 +22,16 @@ void translator(value_error const & e) { PyErr_SetString(PyExc_ValueError, e.wha
 constexpr double pi = 3.141592653589793238462643383279502884197169399375105820974;
 constexpr double two_to_the_one_sixth = 1.122462048309372981433533049679179516232;
 constexpr double two_to_the_one_third = 1.259921049894873164767210607278228350570;
-constexpr double d  = 1.0; // diameter
-constexpr double e  = 1.0; // ~ repulsion strength
+constexpr double d = 1.0; // diameter
 
 
 // Constexpr recursive function for integer powers
-constexpr bool fast_power = true; // Slightly less precise, but reduces eleven multiplications to four
+constexpr bool fast_power = true; // Slightly less precise, but reduces fifteen multiplications to four
 template <int p>
-[[nodiscard]] constexpr auto to_the(auto const base) noexcept requires(p > 0) {
-		if constexpr (p == 1) return base;
-		else if constexpr (fast_power and p % 2 == 0) return to_the<p/2>(base * base);
-		else return to_the<p-1>(base) * base;
+[[nodiscard]] constexpr auto to_the(auto const base) noexcept requires(p >= 0) {
+	if constexpr (p == 0) return 1.0;
+	else if constexpr (fast_power and p % 2 == 0) return to_the<p/2>(base * base);
+	else return to_the<p-1>(base) * base;
 }
 
 // Define a mathematical 2D vector object and its operations
@@ -58,7 +58,7 @@ std::mt19937_64 g; // { std::random_device{}() };
 
 
 // The WCA force for particles at a certain distance vector
-[[nodiscard]] constexpr vec WCA_force(vec dist) noexcept {
+[[nodiscard]] constexpr vec WCA_force(vec dist, double e) noexcept {
 	double const r2 = norm_sq(dist);
 
 	if (r2 >= two_to_the_one_third * d*d) return {0,0};
@@ -73,20 +73,20 @@ std::mt19937_64 g; // { std::random_device{}() };
 
 // The total WCA interaction force between a particle and all its neighbours,
 // accounting for periodic boundary conditions
-[[nodiscard]] vec interaction_force(std::vector<particle> const & particles, size_t particle_idx) noexcept {
+[[nodiscard]] vec interaction_force(std::vector<particle> const & particles, size_t particle_idx, double repulsion_strength) noexcept {
 	// Lambda to calculate the WCA force without boundary conditions, but with a
 	// specific offset
-	auto calc_force = [&particles, particle_idx](vec const pbc_shift = {0,0}) noexcept {
+	auto calc_force = [&particles, particle_idx, repulsion_strength](vec const pbc_shift = {0,0}) noexcept {
 		vec const testparticle = particles[particle_idx].p + pbc_shift;
 		vec total_force{};
 		for (size_t i{}; i < particles.size(); ++i) {
-			if (i != particle_idx) total_force += WCA_force(particles[i].p - testparticle);
+			if (i != particle_idx) total_force += WCA_force(particles[i].p - testparticle, repulsion_strength);
 		} return total_force;
 	};
 
 	//
-	auto const p = particles[particle_idx].p;
-	constexpr auto force_range = d * two_to_the_one_sixth;
+	vec const p = particles[particle_idx].p;
+	constexpr double force_range = d * two_to_the_one_sixth;
 
 	// Sum WCA forces, and wrap around boundaries if needed
 	auto result = calc_force();
@@ -104,11 +104,12 @@ std::mt19937_64 g; // { std::random_device{}() };
 	return result;
 }
 
-void simulation_step(std::vector<particle> & particles,
-                     std::normal_distribution<double> & dx_prng,
-                     std::normal_distribution<double> & da_prng,
-                     double interaction_step_scale,
-                     double propulsion_strength)
+void simulation_round(std::vector<particle> & particles,
+                      std::normal_distribution<double> & dx_prng,
+                      std::normal_distribution<double> & da_prng,
+                      double interaction_step_scale,
+                      double propulsion_strength,
+                      double repulsion_strength)
 {
 	for (size_t i{}; i < particles.size(); ++i) {
 		// Abbreviation
@@ -120,7 +121,7 @@ void simulation_step(std::vector<particle> & particles,
 
 		// Calculate the offsets from the forces
 		auto const dx_rand = vec{dx_prng(g), dx_prng(g)};
-		auto const dx_int  = interaction_step_scale * interaction_force(particles, i);
+		auto const dx_int  = interaction_step_scale * interaction_force(particles, i, repulsion_strength);
 		auto const dx_prop = propulsion_strength * vec{std::cos(p.a), std::sin(p.a)};
 
 		// Apply offsets
@@ -139,11 +140,12 @@ void simulation_step(std::vector<particle> & particles,
 void save_frame(std::vector<particle> & particles,
                 boost::multi_array_ref<double, 3> & archive_data,
                 voro::container_2d & con,
-								int frame_idx)
+                int frame_idx)
 {
 	// Save this frame's positions to return to python
 	// Reinterpret cast is probably UB
-	boost::const_multi_array_ref<double, 2> const particles_data(reinterpret_cast<double const *>(particles.data()), boost::extents[particles.size()][3]);
+	boost::const_multi_array_ref<double, 2> const particles_data(reinterpret_cast<double const *>(particles.data()),
+                                                               boost::extents[particles.size()][3]);
 	archive_data[frame_idx] = particles_data;
 
 	// Calculate density using voronoi diagram
@@ -164,7 +166,18 @@ void save_frame(std::vector<particle> & particles,
 }
 
 // The main simulation function that is called from Python
-auto simulate(py::list const box_size, np::ndarray const init, int rounds, int skip_rounds, double viscosity, double propulsion_strength, double Dt)
+auto simulate(py::list const box_size,
+              np::ndarray const init,
+              double viscosity,
+              double propulsion_strength,
+              double repulsion_strength,
+              double Dt,
+              double density_scale_factor,
+              int nr_densities,
+              int frames_per_density,
+              int frame_interval,
+              int init_equil_rounds,
+              int density_equil_rounds)
 {
 	// Verify the types, dimensions and values of the arguments
 	if (init.get_dtype()  != np::dtype::get_builtin<double>())
@@ -188,35 +201,56 @@ auto simulate(py::list const box_size, np::ndarray const init, int rounds, int s
 	std::vector<particle> particles(init_data, init_data + init.shape(0)); // copy
 
 	// Create a Boost.MultiArray to store snapshots of the simulation
-	int const nr_frames = rounds / skip_rounds;
+	int const nr_frames = nr_densities * frames_per_density;
 	np::ndarray archive { np::empty(py::make_tuple(nr_frames, init.shape(0), 3), init.get_dtype()) };
-	boost::multi_array_ref<double, 3> archive_data(reinterpret_cast<double *>(archive.get_data()), boost::extents[nr_frames][init.shape(0)][3]);
+	boost::multi_array_ref<double, 3> archive_data(reinterpret_cast<double *>(archive.get_data()),
+	                                               boost::extents[nr_frames][init.shape(0)][3]);
 
 	// Prepare for the numerical integration
 	double const gamma = 3.0 * pi * d * viscosity;  // Friction coefficient
-	double const random_step_scale = std::sqrt(Dt / gamma * 2.); // Translational diffusion coefficient
+	double const random_step_scale = std::sqrt(Dt / gamma * 2.0); // Translational diffusion coefficient
 	double const interaction_step_scale = Dt / gamma;
-	double const rotation_step_scale = std::sqrt(Dt / (2.0 * pi*pi*pi * d*d*d * viscosity)); // Rotational diffusion coefficient
+	double const rotation_step_scale = std::sqrt(Dt / (pi * d*d*d * viscosity) * 2.0); // Rotational diffusion coefficient
 
 	std::normal_distribution<double> dx_prng(0.0, random_step_scale);
 	std::normal_distribution<double> da_prng(0.0, rotation_step_scale);
 
 	// Add voronoi container for density calculations
 	voro::container_2d con(0, border.x, 0, border.y, 8, 8, true, true, init.shape(0)*2/8/8);
-	//               		  {container borders x, y} {# div} {periodic} {# particles per div}
+	//                        {container borders x, y} {# div} {periodic} {# particles per div}
 
-	// Perform the actual simulation
-	for (int i{}; i < rounds; ++i) {
-		simulation_step(particles, dx_prng, da_prng, interaction_step_scale, propulsion_strength);
-		if (i % skip_rounds == 0) {
-			save_frame(particles, archive_data, con, i/skip_rounds);
+	// Abbreviate this function call to `sim(repeat)`
+	auto const sim = [&particles, &dx_prng, &da_prng, &interaction_step_scale, &propulsion_strength, &repulsion_strength](int const repeat = 1){
+		if (repeat < 0) throw std::runtime_error{"repeating a negative number of times"};
+		for (int i{}; i < repeat; ++i) simulation_round(particles, dx_prng, da_prng, interaction_step_scale, propulsion_strength, repulsion_strength);
+	};
+
+	// Initial equilibration
+	std::cout << "Equilibrating the system\n";
+	sim(init_equil_rounds);
+
+	for (int j{}; j < nr_densities; ++j) {
+		std::cout << "Running loop " << j << '\n';
+		// Equilibration after each density change
+		sim(density_equil_rounds);
+		// The actual recorded simulation
+		for (int i{}; i < frames_per_density * frame_interval; ++i) {
+			sim();
+			if (i % frame_interval == 0) {
+				save_frame(particles, archive_data, con, j*frames_per_density + i/frame_interval);
+			}
 		}
+		// Decrease density
+		border *= density_scale_factor;
+		std::for_each(particles.begin(), particles.end(),
+		              [density_scale_factor](particle & p){ p.p *= density_scale_factor; });
 	}
+
 	return archive;
 }
 
 
-// Define out Python module
+// Define our Python module
 BOOST_PYTHON_MODULE(mcexercise)
 {
 	np::initialize();
