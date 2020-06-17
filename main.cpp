@@ -1,5 +1,6 @@
 #include <random>
 #include <iostream>
+#include <iomanip>
 #include <boost/python/numpy.hpp>
 #include <boost/multi_array.hpp>
 #include "voro++_2d.hh"
@@ -126,6 +127,7 @@ void simulation_round(std::vector<particle> & particles,
 
 		// Apply offsets
 		vec & v = p.p;
+        //std::cout << norm_sq(dx_rand) << ' ' << norm_sq(dx_int) << ' ' << norm_sq(dx_prop) << '\n';
 		v += dx_rand + dx_int + dx_prop;
 
 		// Apply periodic boundary conditions
@@ -212,6 +214,8 @@ auto simulate(py::list const box_size,
 	double const interaction_step_scale = Dt / gamma;
 	double const rotation_step_scale = std::sqrt(Dt / (pi * d*d*d * viscosity) * 2.0); // Rotational diffusion coefficient
 
+    std::cout << "Random step scale    : " << random_step_scale << "\nPropulsion step scale: " << propulsion_strength << '\n';
+
 	std::normal_distribution<double> dx_prng(0.0, random_step_scale);
 	std::normal_distribution<double> da_prng(0.0, rotation_step_scale);
 
@@ -220,14 +224,20 @@ auto simulate(py::list const box_size,
 	//                        {container borders x, y} {# div} {periodic} {# particles per div}
 
 	// Abbreviate this function call to `sim(repeat)`
-	auto const sim = [&particles, &dx_prng, &da_prng, &interaction_step_scale, &propulsion_strength, &repulsion_strength](int const repeat = 1){
+	auto const sim = [&particles, &dx_prng, &da_prng, &interaction_step_scale, &propulsion_strength, &repulsion_strength](int const repeat = 1, bool log = false){
 		if (repeat < 0) throw std::runtime_error{"repeating a negative number of times"};
-		for (int i{}; i < repeat; ++i) simulation_round(particles, dx_prng, da_prng, interaction_step_scale, propulsion_strength, repulsion_strength);
+		if (log) std::cout << std::fixed << std::setprecision(1);
+		for (int i{}; i < repeat; ++i) {
+			//std::cout << "Running inner loop " << i << '/' << repeat << '\n';
+			simulation_round(particles, dx_prng, da_prng, interaction_step_scale, propulsion_strength, repulsion_strength);
+			if (log and i % int(repeat/1000.0) == 0) std::cout << "\rRunning inner loop " << i*100.0/repeat << '%' << std::flush;
+		}
+		if (log) std::cout << "\rFinished inner loop 100%\n";
 	};
 
 	// Initial equilibration
 	std::cout << "Equilibrating the system\n";
-	sim(init_equil_rounds);
+	sim(init_equil_rounds, /*log*/ true);
 
 	for (int j{}; j < nr_densities; ++j) {
 		std::cout << "Running loop " << j << '\n';

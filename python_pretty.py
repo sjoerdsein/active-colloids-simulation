@@ -6,12 +6,12 @@ from matplotlib import cm
 import mcexercise as mce
 
 
-data_file = "init_1024_med.dat"
+data_file = "init_512_med.dat"
 
-viscosity = 10.0
-propulsion_strength = 0.03
-repulsion_strength = 3.0
-dt = 0.001
+viscosity = 5000.0
+propulsion_strength = 0.01001
+repulsion_strength = 1
+dt = 0.0002
 
 density_scale_factor = 1.05
 nr_densities = 10
@@ -20,19 +20,24 @@ frame_interval = 100
 init_equil_rounds = 3000
 density_equil_rounds = 1000
 
-print(f"Péclet number: {propulsion_strength * 3 * np.pi * viscosity:.3}")
+rot_diff = 1/(np.pi * viscosity)
+trans_diff = rot_diff/3
+tau = 1/rot_diff
+dt *= tau
 
 nr_frames = nr_densities * frames_per_density
+nr_steps = init_equil_rounds + nr_densities * (density_equil_rounds + nr_frames * frame_interval)
+
+print(f"Péclet number: {propulsion_strength * tau:.3f}")
+print(f"Persistence time: {tau:.3f}")
+print(f"Total time: {nr_steps * dt:.3f}")
+print(f"Delta time: {dt:.3f}")
 print(f"Performing {init_equil_rounds + nr_densities * (density_equil_rounds + nr_frames * frame_interval)} total simulation steps and saving {nr_frames} frames")
 
 print(f"Reading data from {data_file}")
 with open(data_file) as file:
     box_size = np.genfromtxt(file, max_rows=1).tolist()
     initial_positions = np.genfromtxt(file)
-
-f = 1.0 # size factor
-box_size = [r*f for r in box_size]
-initial_positions[:,:2] *= f
 
 print(f"Initial density is {initial_positions.shape[0] / (box_size[0] * box_size[1]):.3f} particles per unit area")
 print(f"Final density is {initial_positions.shape[0] / (box_size[0] * box_size[1]) / (density_scale_factor ** (nr_densities * 2)):.3f} particles per unit area")
