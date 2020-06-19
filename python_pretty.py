@@ -10,7 +10,6 @@ data_file = "init_512_med.dat"
 
 viscosity = 5000.0
 propulsion_strength = 0.01001
-repulsion_strength = 1
 dt = 0.0002
 
 density_scale_factor = 1.05
@@ -47,7 +46,6 @@ result = mce.simulate(box_size,
                       initial_positions,
                       viscosity,
                       propulsion_strength,
-                      repulsion_strength,
                       dt,
                       density_scale_factor,
                       nr_densities,

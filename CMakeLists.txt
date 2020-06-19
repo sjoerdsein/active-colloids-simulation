@@ -17,7 +17,9 @@ add_subdirectory(voro/2d) # Include the voro++_2d lib
 target_link_libraries(mcexercise PRIVATE voro++_2d) # Make it available in the code
 
 target_compile_features(mcexercise PUBLIC  cxx_std_20) # Use C++2a
-target_compile_options (mcexercise PRIVATE -fconcepts) # Enable C++20 concepts on GCC 9
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+	target_compile_options (mcexercise PRIVATE -fconcepts) # Enable C++20 concepts on GCC 9
+endif()
 # Enable many warnings, and don't finish compiling when something's wrong
 target_compile_options (mcexercise PRIVATE -Wall -Wextra -Wpedantic -Werror) # TODO -Weverything -Wno-c++98-compat with clang
 target_compile_options (mcexercise PRIVATE -O3 -march=native -flto) # Enable optimizations

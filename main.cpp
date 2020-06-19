@@ -21,9 +21,9 @@ void translator(value_error const & e) { PyErr_SetString(PyExc_ValueError, e.wha
 
 // Define global constants
 constexpr double pi = 3.141592653589793238462643383279502884197169399375105820974;
-constexpr double two_to_the_one_sixth = 1.122462048309372981433533049679179516232;
 constexpr double two_to_the_one_third = 1.259921049894873164767210607278228350570;
 constexpr double d = 1.0; // diameter
+constexpr double e = 1.0; // ~ repulsion strength
 
 
 // Constexpr recursive function for integer powers
@@ -46,6 +46,7 @@ struct vec {
               constexpr vec & operator+=(vec        & lhs,  vec    const rhs) noexcept { return lhs = lhs + rhs; }
               constexpr vec & operator-=(vec        & lhs,  vec    const rhs) noexcept { return lhs = lhs - rhs; }
               constexpr vec & operator*=(vec        & lhs,  double const rhs) noexcept { return lhs = lhs * rhs; }
+[[nodiscard]] constexpr vec   operator- (vec const v) noexcept { return {-v.x, -v.y}; }
 [[nodiscard]] constexpr double norm_sq(vec const p) noexcept { return p.x*p.x + p.y*p.y; }
 
 struct particle {
@@ -53,89 +54,121 @@ struct particle {
 	double a{};
 };
 
-// Define global variables
-vec border;
-std::mt19937_64 g; // { std::random_device{}() };
+// To store both the pointer to the particle as well as it's position in the
+// particles vector
+struct particle_ptr_id { particle * ptr; size_t id; };
 
+// Define global variables
+static vec border{};
+static std::mt19937_64 g{}; // { std::random_device{}() };
+
+// Calculate the index of the bin a particle should go into based on the
+// particle's position. WARNING: this will be incorrect if the particle is
+// outside of the boundaries
+int pos2bin(particle p, int bin_size)
+{
+	return int(p.p.x/border.x*bin_size) + int(p.p.y/border.y*bin_size)*bin_size;
+}
 
 // The WCA force for particles at a certain distance vector
-[[nodiscard]] constexpr vec WCA_force(vec dist, double e) noexcept {
+[[nodiscard]] constexpr vec WCA_force(vec dist, double e) noexcept
+{
 	double const r2 = norm_sq(dist);
 
 	if (r2 >= two_to_the_one_third * d*d) return {0,0};
 
-	double const r8  = to_the<4>(r2);
+	double const r6  = to_the<3>(r2);
 	double const r14 = to_the<7>(r2);
-	constexpr double const d6  = to_the <6>(d);
-	constexpr double const d12 = to_the<12>(d);
+	constexpr double d6 = to_the<6>(d);
 
-	return dist * (4*e*(6*d6/r8 - 12*d12/r14));
+	return dist * (24.0*e*d6*(d6+d6-r6)/r14); // ~23% faster
+	//return dist * (4*e*(12*d12/r14 - 6*d6/r8)); // equivalent
 }
 
 // The total WCA interaction force between a particle and all its neighbours,
 // accounting for periodic boundary conditions
-[[nodiscard]] vec interaction_force(std::vector<particle> const & particles, size_t particle_idx, double repulsion_strength) noexcept {
-	// Lambda to calculate the WCA force without boundary conditions, but with a
-	// specific offset
-	auto calc_force = [&particles, particle_idx, repulsion_strength](vec const pbc_shift = {0,0}) noexcept {
-		vec const testparticle = particles[particle_idx].p + pbc_shift;
-		vec total_force{};
-		for (size_t i{}; i < particles.size(); ++i) {
-			if (i != particle_idx) total_force += WCA_force(particles[i].p - testparticle, repulsion_strength);
-		} return total_force;
-	};
-
-	//
-	vec const p = particles[particle_idx].p;
-	constexpr double force_range = d * two_to_the_one_sixth;
-
-	// Sum WCA forces, and wrap around boundaries if needed
-	auto result = calc_force();
-	if (p.x < force_range) {
-		result += calc_force({ border.x, 0});
-		/**/ if (p.y <=         force_range) result += calc_force({ border.x,  border.y});
-		else if (p.y > border.y-force_range) result += calc_force({ border.x, -border.y});
-	} else if (p.x > border.x-force_range) {
-		result += calc_force({-border.x, 0});
-		/**/ if (p.y <=         force_range) result += calc_force({-border.x,  border.y});
-		else if (p.y > border.y-force_range) result += calc_force({-border.x, -border.y});
+[[nodiscard]] vec interaction_force(std::vector<std::vector<particle_ptr_id>> const & bins,
+									std::vector<int> const & bin_idx,
+									std::vector<int> const & part_idx,
+									int bin_size,
+									size_t particle_idx) noexcept
+{
+	vec total_force = {0.0,0.0};
+	// Sum WCA_force for all particles in own and surrounding bins incl PBC, but not itself
+	int const bin_index = bin_idx[particle_idx];
+	particle const & p = *bins[bin_index][part_idx[particle_idx]].ptr;
+	struct v {
+		int x, y;
+		[[nodiscard]] constexpr v operator+(v const r) const noexcept { return {x + r.x, y + r.y}; }
+  };
+	v const bin_coord{bin_index % bin_size,
+	                  bin_index / bin_size};
+	// Loop over surrounding bins
+	for (auto const neighbor_offset : {
+	     v{-1,-1}, v{0,-1}, v{1,-1},
+	     v{-1, 0}, v{0, 0}, v{1, 0},
+	     v{-1, 1}, v{0, 1}, v{1, 1}})
+	{
+		// Periodic boundary conditions for the bins
+		vec pbc_correction{0.0,0.0};
+		auto bin_pbc = bin_coord + neighbor_offset;
+		if (bin_pbc.x <  bin_size) { bin_pbc.x += bin_size; pbc_correction.x -= border.x; }
+		if (bin_pbc.x >= bin_size) { bin_pbc.x -= bin_size; pbc_correction.x += border.x; }
+		if (bin_pbc.y <  bin_size) { bin_pbc.y += bin_size; pbc_correction.y -= border.y; }
+		if (bin_pbc.y >= bin_size) { bin_pbc.y -= bin_size; pbc_correction.y += border.y; }
+		// for all particles in the bin, if it isn't p, add the wca force
+		for (particle_ptr_id ppi : bins[bin_pbc.x + bin_pbc.y*bin_size]) {
+			if (ppi.ptr != &p) total_force += WCA_force(p.p - ppi.ptr->p - pbc_correction);
+		}
 	}
-	/**/ if (p.y <=         force_range) result += calc_force({0,  border.y});
-	else if (p.y > border.y-force_range) result += calc_force({0, -border.y});
-	return result;
+
+	return total_force;
 }
 
 void simulation_round(std::vector<particle> & particles,
+					  std::vector<std::vector<particle_ptr_id>> & bins,
+                      std::vector<int> & bin_idx,
+                      std::vector<int> & part_idx,
+                      int bin_size,
                       std::normal_distribution<double> & dx_prng,
                       std::normal_distribution<double> & da_prng,
                       double interaction_step_scale,
-                      double propulsion_strength,
-                      double repulsion_strength)
+                      double propulsion_strength)
 {
 	for (size_t i{}; i < particles.size(); ++i) {
-		// Abbreviation
+		// abbreviation
 		particle & p { particles[i] };
 
-		// Apply random rotation
+		// apply random rotation
 		auto const da_rand = da_prng(g);
 		p.a += da_rand;
 
-		// Calculate the offsets from the forces
+		// calculate the offsets from the forces
 		auto const dx_rand = vec{dx_prng(g), dx_prng(g)};
-		auto const dx_int  = interaction_step_scale * interaction_force(particles, i, repulsion_strength);
+		auto const dx_int  = interaction_step_scale * interaction_force(bins, bin_idx, part_idx, bin_size, i);
 		auto const dx_prop = propulsion_strength * vec{std::cos(p.a), std::sin(p.a)};
 
-		// Apply offsets
+		// apply offsets
 		vec & v = p.p;
         //std::cout << norm_sq(dx_rand) << ' ' << norm_sq(dx_int) << ' ' << norm_sq(dx_prop) << '\n';
 		v += dx_rand + dx_int + dx_prop;
 
-		// Apply periodic boundary conditions
-		// Rather slow when the particles are near 10^50...
-		while (v.x <  border.x) v.x += border.x;
-		while (v.x >= border.x) v.x -= border.x;
-		while (v.y <  border.y) v.y += border.y;
-		while (v.y >= border.y) v.y -= border.y;
+		// apply periodic boundary conditions
+		// exit when we are about to get a near-infinite loop
+		for (int i{}; v.x <  border.x; ++i) { v.x += border.x; if (i>2) throw std::runtime_error{"particle is too far left"}; }
+		for (int i{}; v.x >= border.x; ++i) { v.x -= border.x; if (i>2) throw std::runtime_error{"particle is too far right"}; }
+		for (int i{}; v.y <  border.y; ++i) { v.y += border.y; if (i>2) throw std::runtime_error{"particle is too far down"}; }
+		for (int i{}; v.y >= border.y; ++i) { v.y -= border.y; if (i>2) throw std::runtime_error{"particle is too far up"}; }
+
+		if (int const old_idx=bin_idx[i], new_idx=pos2bin(p, bin_size); new_idx != old_idx){
+			bins[new_idx].emplace_back(std::move(bins[old_idx][part_idx[i]]));
+			auto next_part = bins[old_idx].erase(bins[old_idx].begin() + part_idx[i]);
+			for (; next_part != bins[old_idx].end(); ++next_part) {
+				part_idx[next_part->id] = next_part - bins[old_idx].begin();
+			}
+			bin_idx[i] = new_idx;
+			part_idx[i] = bins[new_idx].size()-1;
+		}
 	}
 }
 
@@ -172,7 +205,6 @@ auto simulate(py::list const box_size,
               np::ndarray const init,
               double viscosity,
               double propulsion_strength,
-              double repulsion_strength,
               double Dt,
               double density_scale_factor,
               int nr_densities,
@@ -199,6 +231,7 @@ auto simulate(py::list const box_size,
 	}
 
 	// Copy the data into a std::vector
+	std::cout << "Copying data from Python to C++\n";
 	auto init_data { reinterpret_cast<particle const *>(init.get_data()) }; // UB?
 	std::vector<particle> particles(init_data, init_data + init.shape(0)); // copy
 
@@ -208,29 +241,52 @@ auto simulate(py::list const box_size,
 	boost::multi_array_ref<double, 3> archive_data(reinterpret_cast<double *>(archive.get_data()),
 	                                               boost::extents[nr_frames][init.shape(0)][3]);
 
+	std::cout << "Generating bins...\n";
+
+	// Fill the bins with pointers to their particles
+	// We can probably exploit voro++ to do this for us, but no
+	int const bin_size = std::round(std::cbrt(particles.size()));
+	std::vector<std::vector<particle_ptr_id>> bins(bin_size*bin_size);
+	std::vector<int> bin_idx (particles.size());
+	std::vector<int> part_idx(particles.size());
+	for (auto & bin : bins) bin.reserve(2*bin_size);
+	for (size_t i{}; i < particles.size(); ++i) {
+		particle & p { particles[i] };
+		int const bi = pos2bin(p, bin_size);
+		bin_idx[i] = bi; // In what bin?
+		try { bins.at(bi).emplace_back(particle_ptr_id{&p, i}); } // Store
+		catch (std::out_of_range const &) {
+            std::cerr << "It appears a particle is not inside the boundaries\n";
+            throw;
+		}
+		part_idx[i] = bins[bi].size()-1; // Where in the bin?
+	} //*/
+
+	std::cout << "Generated " << bin_size << " x " << bin_size << " bins\n";
+
 	// Prepare for the numerical integration
 	double const gamma = 3.0 * pi * d * viscosity;  // Friction coefficient
 	double const random_step_scale = std::sqrt(Dt / gamma * 2.0); // Translational diffusion coefficient
 	double const interaction_step_scale = Dt / gamma;
 	double const rotation_step_scale = std::sqrt(Dt / (pi * d*d*d * viscosity) * 2.0); // Rotational diffusion coefficient
 
-    std::cout << "Random step scale    : " << random_step_scale << "\nPropulsion step scale: " << propulsion_strength << '\n';
+	std::cout << "Random step scale    : " << random_step_scale << "\nPropulsion step scale: " << propulsion_strength << '\n';
 
 	std::normal_distribution<double> dx_prng(0.0, random_step_scale);
 	std::normal_distribution<double> da_prng(0.0, rotation_step_scale);
 
 	// Add voronoi container for density calculations
 	voro::container_2d con(0, border.x, 0, border.y, 8, 8, true, true, init.shape(0)*2/8/8);
-	//                        {container borders x, y} {# div} {periodic} {# particles per div}
+	//                     {container borders x, y} {# div} {periodic} {# particles per div}
 
 	// Abbreviate this function call to `sim(repeat)`
-	auto const sim = [&particles, &dx_prng, &da_prng, &interaction_step_scale, &propulsion_strength, &repulsion_strength](int const repeat = 1, bool log = false){
+	auto const sim = [&particles, &bins, &bin_idx, &part_idx, bin_size, &dx_prng, &da_prng, &interaction_step_scale, &propulsion_strength](int const repeat = 1, bool log = false){
 		if (repeat < 0) throw std::runtime_error{"repeating a negative number of times"};
 		if (log) std::cout << std::fixed << std::setprecision(1);
 		for (int i{}; i < repeat; ++i) {
-			//std::cout << "Running inner loop " << i << '/' << repeat << '\n';
-			simulation_round(particles, dx_prng, da_prng, interaction_step_scale, propulsion_strength, repulsion_strength);
+			//if (log) std::cout << "Running inner loop " << i << '/' << repeat << '\n';
 			if (log and i % int(repeat/1000.0) == 0) std::cout << "\rRunning inner loop " << i*100.0/repeat << '%' << std::flush;
+			simulation_round(particles, bins, bin_idx, part_idx, bin_size, dx_prng, da_prng, interaction_step_scale, propulsion_strength);
 		}
 		if (log) std::cout << "\rFinished inner loop 100%\n";
 	};

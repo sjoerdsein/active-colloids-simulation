@@ -8,7 +8,6 @@ import mcexercise as mce
 
 viscosity = 10.0
 propulsion_strength = 0.003
-repulsion_strength = 1.0
 dt = 0.001
 
 density_scale_factor = 1.05
@@ -31,7 +30,6 @@ result = mce.simulate(box_size,
                       initial_positions,
                       viscosity,
                       propulsion_strength,
-                      repulsion_strength,
                       dt,
                       density_scale_factor,
                       nr_densities,
